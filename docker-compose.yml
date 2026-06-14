@@ -1,0 +1,241 @@
+version: "3.8"
+
+# PressPilot — Docker Compose
+# All images must support linux/arm64 (Oracle VM.Standard.A1.Flex is ARM64).
+# Run: docker compose up -d
+# Logs: docker compose logs -f [service-name]
+
+networks:
+  presspilot:
+    driver: bridge
+
+volumes:
+  mysql_data:
+  caddy_data:
+  caddy_config:
+  ghost_mostlyprompt_content:
+  ghost_fellowcoder_content:
+  ghost_aimovi_content:
+  n8n_data:
+  nocodb_data:
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # MySQL 8 — shared by all Ghost instances (separate databases per site)
+  # mysql:8.0 supports linux/arm64 via oraclelinux base
+  # ---------------------------------------------------------------------------
+  mysql:
+    image: mysql:8.0
+    restart: unless-stopped
+    networks:
+      - presspilot
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./scripts/mysql-init:/docker-entrypoint-initdb.d  # creates all Ghost DBs on first run
+    command: --default-authentication-plugin=mysql_native_password
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ---------------------------------------------------------------------------
+  # Caddy — reverse proxy + automatic Let's Encrypt SSL
+  # ---------------------------------------------------------------------------
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    networks:
+      - presspilot
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+  # ---------------------------------------------------------------------------
+  # Ghost — mostlyprompt.com (Priority 1)
+  # ---------------------------------------------------------------------------
+  ghost-mostlyprompt:
+    image: ghost:5-alpine
+    restart: unless-stopped
+    networks:
+      - presspilot
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      url: ${GHOST_MOSTLYPROMPT_URL}
+      database__client: mysql
+      database__connection__host: mysql
+      database__connection__port: 3306
+      database__connection__user: ${MYSQL_USER}
+      database__connection__password: ${MYSQL_PASSWORD}
+      database__connection__database: ${GHOST_MOSTLYPROMPT_DB_NAME}
+      mail__transport: ${GHOST_MAIL_TRANSPORT:-SMTP}
+      mail__options__host: ${GHOST_MAIL_HOST:-smtp.mailgun.org}
+      mail__options__port: ${GHOST_MAIL_PORT:-587}
+      mail__options__auth__user: ${GHOST_MAIL_USER:-}
+      mail__options__auth__pass: ${GHOST_MAIL_PASSWORD:-}
+      mail__from: ${GHOST_MAIL_FROM:-noreply@mostlyprompt.com}
+      NODE_ENV: production
+    volumes:
+      - ghost_mostlyprompt_content:/var/lib/ghost/content
+
+  # ---------------------------------------------------------------------------
+  # Ghost — fellowcoder.com
+  # ---------------------------------------------------------------------------
+  ghost-fellowcoder:
+    image: ghost:5-alpine
+    restart: unless-stopped
+    networks:
+      - presspilot
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      url: ${GHOST_FELLOWCODER_URL}
+      database__client: mysql
+      database__connection__host: mysql
+      database__connection__port: 3306
+      database__connection__user: ${MYSQL_USER}
+      database__connection__password: ${MYSQL_PASSWORD}
+      database__connection__database: ${GHOST_FELLOWCODER_DB_NAME}
+      mail__transport: ${GHOST_MAIL_TRANSPORT:-SMTP}
+      mail__options__host: ${GHOST_MAIL_HOST:-smtp.mailgun.org}
+      mail__options__port: ${GHOST_MAIL_PORT:-587}
+      mail__options__auth__user: ${GHOST_MAIL_USER:-}
+      mail__options__auth__pass: ${GHOST_MAIL_PASSWORD:-}
+      mail__from: ${GHOST_MAIL_FROM:-noreply@fellowcoder.com}
+      NODE_ENV: production
+    volumes:
+      - ghost_fellowcoder_content:/var/lib/ghost/content
+
+  # ---------------------------------------------------------------------------
+  # Ghost — aimovi.com (uncomment when ready)
+  # ---------------------------------------------------------------------------
+  # ghost-aimovi:
+  #   image: ghost:5-alpine
+  #   restart: unless-stopped
+  #   networks:
+  #     - presspilot
+  #   depends_on:
+  #     mysql:
+  #       condition: service_healthy
+  #   environment:
+  #     url: ${GHOST_AIMOVI_URL}
+  #     database__client: mysql
+  #     database__connection__host: mysql
+  #     database__connection__port: 3306
+  #     database__connection__user: ${MYSQL_USER}
+  #     database__connection__password: ${MYSQL_PASSWORD}
+  #     database__connection__database: ${GHOST_AIMOVI_DB_NAME}
+  #     NODE_ENV: production
+  #   volumes:
+  #     - ghost_aimovi_content:/var/lib/ghost/content
+
+  # ---------------------------------------------------------------------------
+  # n8n — automation workflows
+  # ---------------------------------------------------------------------------
+  n8n:
+    image: n8nio/n8n:latest
+    restart: unless-stopped
+    networks:
+      - presspilot
+    environment:
+      N8N_HOST: ${N8N_HOST:-n8n.mostlyprompt.com}
+      N8N_PORT: 5678
+      N8N_PROTOCOL: ${N8N_PROTOCOL:-https}
+      WEBHOOK_URL: ${WEBHOOK_URL:-https://n8n.mostlyprompt.com/}
+      N8N_BASIC_AUTH_ACTIVE: "true"
+      N8N_BASIC_AUTH_USER: ${N8N_BASIC_AUTH_USER:-admin}
+      N8N_BASIC_AUTH_PASSWORD: ${N8N_BASIC_AUTH_PASSWORD}
+      N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY}
+      GENERIC_TIMEZONE: Asia/Dhaka
+      # Pass LLM keys so n8n workflows can reference them via environment
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      XAI_API_KEY: ${XAI_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      OLLAMA_URL: ${OLLAMA_URL:-http://ollama:11434}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
+      PROVIDER_LAYER_URL: http://provider-layer:3100
+    volumes:
+      - n8n_data:/home/node/.n8n
+
+  # ---------------------------------------------------------------------------
+  # Provider Layer — internal LLM routing microservice
+  # ---------------------------------------------------------------------------
+  provider-layer:
+    build:
+      context: ./provider-layer
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    networks:
+      - presspilot
+    environment:
+      PORT: 3100
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      XAI_API_KEY: ${XAI_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      OLLAMA_URL: ${OLLAMA_URL:-http://ollama:11434}
+      PROVIDER_SCORING: ${PROVIDER_SCORING:-anthropic}
+      PROVIDER_RESEARCH: ${PROVIDER_RESEARCH:-anthropic}
+      PROVIDER_DRAFT: ${PROVIDER_DRAFT:-anthropic}
+      MODEL_ANTHROPIC_SCORING: ${MODEL_ANTHROPIC_SCORING:-claude-haiku-4-5-20251001}
+      MODEL_ANTHROPIC_DRAFT: ${MODEL_ANTHROPIC_DRAFT:-claude-sonnet-4-6}
+      MODEL_OPENAI_SCORING: ${MODEL_OPENAI_SCORING:-gpt-4o-mini}
+      MODEL_OPENAI_DRAFT: ${MODEL_OPENAI_DRAFT:-gpt-4o}
+      MODEL_GEMINI_SCORING: ${MODEL_GEMINI_SCORING:-gemini-2.0-flash}
+      MODEL_GEMINI_DRAFT: ${MODEL_GEMINI_DRAFT:-gemini-2.0-flash}
+      MODEL_OLLAMA_SCORING: ${MODEL_OLLAMA_SCORING:-llama3.2}
+
+  # ---------------------------------------------------------------------------
+  # NocoDB — keyword store (optional; comment out if using Google Sheets)
+  # ---------------------------------------------------------------------------
+  nocodb:
+    image: nocodb/nocodb:latest
+    restart: unless-stopped
+    networks:
+      - presspilot
+    environment:
+      NC_DB: "pg://nocodb-pg:5432?u=nocodb&p=${NOCODB_DB_PASSWORD}&d=nocodb"
+      NC_AUTH_JWT_SECRET: ${N8N_ENCRYPTION_KEY}
+    volumes:
+      - nocodb_data:/usr/app/data
+    depends_on:
+      - nocodb-pg
+
+  nocodb-pg:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    networks:
+      - presspilot
+    environment:
+      POSTGRES_USER: nocodb
+      POSTGRES_PASSWORD: ${NOCODB_DB_PASSWORD}
+      POSTGRES_DB: nocodb
+    volumes:
+      - nocodb_data:/var/lib/postgresql/data
+
+  # ---------------------------------------------------------------------------
+  # Ollama — local LLM (optional; remove if only using API providers)
+  # 4 OCPU / 24 GB ARM64 can handle 7B models comfortably
+  # ---------------------------------------------------------------------------
+  # ollama:
+  #   image: ollama/ollama:latest
+  #   restart: unless-stopped
+  #   networks:
+  #     - presspilot
+  #   volumes:
+  #     - ollama_data:/root/.ollama
+  #   # After start, pull a model: docker exec -it presspilot-ollama-1 ollama pull llama3.2

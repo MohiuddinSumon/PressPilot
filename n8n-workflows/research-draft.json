@@ -1,0 +1,164 @@
+{
+  "name": "PressPilot — Research & Draft",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "research-draft",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-trigger",
+      "name": "Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [100, 300],
+      "webhookId": "presspilot-research-draft"
+    },
+    {
+      "parameters": {
+        "url": "http://provider-layer:3100/generate",
+        "method": "POST",
+        "sendBody": true,
+        "contentType": "json",
+        "body": {
+          "task": "research",
+          "prompt": "=Research the keyword: \"{{ $json.keyword }}\"\n\nDomain/niche: {{ $json.domain }}\nTarget audience: blog readers interested in {{ $json.domain }}\n\nProvide a research brief with:\n1. What searchers are actually looking for (search intent)\n2. Key points to cover in the article\n3. Common questions people have about this topic\n4. 3-5 related keywords/LSI terms to include naturally\n5. Suggested H2 headings (3-5)\n\nBe specific and actionable. This will be used to write a blog post.",
+          "systemPrompt": "You are a content strategist. Provide thorough, specific research briefs. No fluff.",
+          "maxTokens": 1500
+        },
+        "options": {}
+      },
+      "id": "research-step",
+      "name": "Research Brief (LLM)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [300, 300]
+    },
+    {
+      "parameters": {
+        "url": "http://provider-layer:3100/generate",
+        "method": "POST",
+        "sendBody": true,
+        "contentType": "json",
+        "body": {
+          "task": "draft",
+          "prompt": "=Write a complete, SEO-optimized blog post for the keyword: \"{{ $('Webhook Trigger').item.json.keyword }}\"\n\nBlog: {{ $('Webhook Trigger').item.json.domain }}\nRecommended title: {{ $('Webhook Trigger').item.json.recommended_title }}\n\nResearch brief:\n{{ $json.text }}\n\nRequirements:\n- Write in Markdown format\n- Start with a compelling introduction (no H1 — Ghost adds the title)\n- Use H2 and H3 headings\n- Target length: 1200-1800 words\n- Include the primary keyword naturally in first 100 words, 2-3 times throughout\n- End with a clear conclusion and call-to-action\n- Tone: helpful, clear, practical (not clickbait)\n- Include a meta description (150-160 chars) at the TOP of the response in this format:\nMETA: <your meta description here>\n---\n<post body>",
+          "systemPrompt": "You are an expert blog writer. Write engaging, helpful content that ranks well and serves readers. Always include the META: line first.",
+          "maxTokens": 3000
+        },
+        "options": {}
+      },
+      "id": "draft-step",
+      "name": "Write Draft (LLM)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [500, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const raw = $json.text || '';\nconst lines = raw.split('\\n');\n\n// Extract META description\nlet metaDescription = '';\nlet bodyStart = 0;\nif (lines[0].startsWith('META:')) {\n  metaDescription = lines[0].replace('META:', '').trim();\n  bodyStart = lines[1] === '---' ? 2 : 1;\n}\n\nconst body = lines.slice(bodyStart).join('\\n').trim();\nconst keyword = $('Webhook Trigger').item.json.keyword;\nconst title = $('Webhook Trigger').item.json.recommended_title || `The Complete Guide to ${keyword}`;\nconst domain = $('Webhook Trigger').item.json.domain;\nconst keywordId = $('Webhook Trigger').item.json.Id;\n\n// Ghost API key comes from env — set in n8n credentials or env\n// Format: ghost_<site>_admin_api_key\nconst ghostKeyEnvMap = {\n  'mostlyprompt.com': $env.GHOST_MOSTLYPROMPT_ADMIN_API_KEY,\n  'fellowcoder.com': $env.GHOST_FELLOWCODER_ADMIN_API_KEY,\n};\nconst ghostKey = ghostKeyEnvMap[domain] || '';\n\nreturn [{\n  json: {\n    title,\n    body,\n    metaDescription,\n    keyword,\n    domain,\n    keywordId,\n    ghostKey,\n    tags: [{ name: keyword }, { name: 'AI Generated' }]\n  }\n}];"
+      },
+      "id": "parse-draft",
+      "name": "Parse Draft Output",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [700, 300]
+    },
+    {
+      "parameters": {
+        "url": "=https://{{ $json.domain }}/ghost/api/admin/posts/",
+        "method": "POST",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "contentType": "json",
+        "body": {
+          "posts": [
+            {
+              "title": "={{ $json.title }}",
+              "lexical": "={\"root\":{\"children\":[{\"children\":[{\"detail\":0,\"format\":0,\"mode\":\"normal\",\"style\":\"\",\"text\":{{ JSON.stringify($json.body) }},\"type\":\"text\",\"version\":1}],\"direction\":\"ltr\",\"format\":\"\",\"indent\":0,\"type\":\"paragraph\",\"version\":1}],\"direction\":\"ltr\",\"format\":\"\",\"indent\":0,\"type\":\"root\",\"version\":1}}",
+              "status": "draft",
+              "custom_excerpt": "={{ $json.metaDescription }}",
+              "tags": "={{ $json.tags }}"
+            }
+          ]
+        },
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "=Ghost {{ $json.ghostKey }}" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "post-to-ghost",
+      "name": "Create Ghost Draft",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [900, 300],
+      "notes": "POSTs the draft to Ghost Admin API. Requires Ghost Admin API key in ghostKey field."
+    },
+    {
+      "parameters": {
+        "url": "=https://api.telegram.org/bot{{ $env.TELEGRAM_BOT_TOKEN }}/sendMessage",
+        "method": "POST",
+        "sendBody": true,
+        "contentType": "json",
+        "body": {
+          "chat_id": "={{ $env.TELEGRAM_CHAT_ID }}",
+          "text": "=📝 New draft ready!\n\n*{{ $('Parse Draft Output').item.json.title }}*\nSite: {{ $('Parse Draft Output').item.json.domain }}\nKeyword: {{ $('Parse Draft Output').item.json.keyword }}\n\n🔗 Review: https://{{ $('Parse Draft Output').item.json.domain }}/ghost\n\nMeta: {{ $('Parse Draft Output').item.json.metaDescription }}",
+          "parse_mode": "Markdown"
+        },
+        "options": {}
+      },
+      "id": "telegram-notify",
+      "name": "Telegram Notification",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1100, 300]
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.NOCODB_API_URL }}/api/v1/db/data/noco/presspilot/Keywords/{{ $('Parse Draft Output').item.json.keywordId }}",
+        "method": "PATCH",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "contentType": "json",
+        "body": {
+          "status": "drafted",
+          "last_used": "={{ new Date().toISOString().split('T')[0] }}"
+        },
+        "options": {}
+      },
+      "id": "mark-drafted",
+      "name": "Mark Keyword as Drafted",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1300, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\"status\": \"ok\", \"keyword\": \"{{ $('Webhook Trigger').item.json.keyword }}\"}"
+      },
+      "id": "respond",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [1500, 300]
+    }
+  ],
+  "connections": {
+    "Webhook Trigger": { "main": [[{ "node": "Research Brief (LLM)", "type": "main", "index": 0 }]] },
+    "Research Brief (LLM)": { "main": [[{ "node": "Write Draft (LLM)", "type": "main", "index": 0 }]] },
+    "Write Draft (LLM)": { "main": [[{ "node": "Parse Draft Output", "type": "main", "index": 0 }]] },
+    "Parse Draft Output": { "main": [[{ "node": "Create Ghost Draft", "type": "main", "index": 0 }]] },
+    "Create Ghost Draft": { "main": [[{ "node": "Telegram Notification", "type": "main", "index": 0 }]] },
+    "Telegram Notification": { "main": [[{ "node": "Mark Keyword as Drafted", "type": "main", "index": 0 }]] },
+    "Mark Keyword as Drafted": { "main": [[{ "node": "Respond to Webhook", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1" },
+  "tags": [{ "name": "presspilot" }],
+  "notes": "Triggered by keyword-scoring workflow (or manually). Does research → draft → Ghost API → Telegram notification. Requires: provider-layer running, Ghost Admin API key in env, Telegram bot token."
+}
