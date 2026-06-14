@@ -1,0 +1,115 @@
+{
+  "name": "PressPilot — Keyword Scoring",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [{ "field": "cronExpression", "expression": "0 6 * * *" }]
+        }
+      },
+      "id": "cron-trigger",
+      "name": "Daily 6AM Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1,
+      "position": [100, 300]
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.NOCODB_API_URL }}/api/v1/db/data/noco/presspilot/Keywords",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "where", "value": "(status,eq,pending)" },
+            { "name": "limit", "value": "50" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "fetch-keywords",
+      "name": "Fetch Pending Keywords",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [300, 300],
+      "notes": "Fetches pending keywords from NocoDB. Switch to Google Sheets HTTP node if using Sheets."
+    },
+    {
+      "parameters": {
+        "url": "http://provider-layer:3100/generate",
+        "method": "POST",
+        "sendBody": true,
+        "contentType": "json",
+        "body": {
+          "task": "scoring",
+          "prompt": "=Score the following keyword for SEO potential on a blog about {{ $json.domain }}.\n\nKeyword: {{ $json.keyword }}\n\nConsider: search intent, competition level (lower is better for new sites), content depth possible, monetization potential.\n\nReturn ONLY a JSON object: {\"score\": <0-100>, \"reasoning\": \"<2 sentences>\", \"recommended_title\": \"<suggested post title>\"}",
+          "systemPrompt": "You are an SEO strategist. Score keywords objectively. Return only valid JSON, no markdown.",
+          "maxTokens": 300
+        },
+        "options": {}
+      },
+      "id": "score-keyword",
+      "name": "Score Keyword (LLM)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [500, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\n\n// Parse LLM response and attach score to each keyword\nconst scored = items.map(item => {\n  try {\n    const parsed = JSON.parse(item.json.text);\n    return {\n      json: {\n        ...item.json,\n        llm_score: parsed.score || 0,\n        llm_reasoning: parsed.reasoning || '',\n        recommended_title: parsed.recommended_title || ''\n      }\n    };\n  } catch(e) {\n    return { json: { ...item.json, llm_score: 0, llm_reasoning: 'parse error', recommended_title: '' } };\n  }\n});\n\n// Sort by score descending, take top 3\nscored.sort((a, b) => b.json.llm_score - a.json.llm_score);\nreturn scored.slice(0, 3);"
+      },
+      "id": "pick-top3",
+      "name": "Pick Top 3 Keywords",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [700, 300]
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.NOCODB_API_URL }}/api/v1/db/data/noco/presspilot/Keywords/{{ $json.Id }}",
+        "method": "PATCH",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "contentType": "json",
+        "body": {
+          "status": "selected",
+          "score": "={{ $json.llm_score }}",
+          "notes": "={{ $json.llm_reasoning }}"
+        },
+        "options": {}
+      },
+      "id": "mark-selected",
+      "name": "Mark as Selected in NocoDB",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [900, 300]
+    },
+    {
+      "parameters": {
+        "url": "={{ $workflow.webhookBaseUrl }}/webhook/research-draft",
+        "method": "POST",
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={{ $json }}",
+        "options": {}
+      },
+      "id": "trigger-draft",
+      "name": "Trigger Research & Draft",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1100, 300],
+      "notes": "Triggers the research-draft workflow for each selected keyword."
+    }
+  ],
+  "connections": {
+    "Daily 6AM Trigger": { "main": [[{ "node": "Fetch Pending Keywords", "type": "main", "index": 0 }]] },
+    "Fetch Pending Keywords": { "main": [[{ "node": "Score Keyword (LLM)", "type": "main", "index": 0 }]] },
+    "Score Keyword (LLM)": { "main": [[{ "node": "Pick Top 3 Keywords", "type": "main", "index": 0 }]] },
+    "Pick Top 3 Keywords": { "main": [[{ "node": "Mark as Selected in NocoDB", "type": "main", "index": 0 }]] },
+    "Mark as Selected in NocoDB": { "main": [[{ "node": "Trigger Research & Draft", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1" },
+  "tags": [{ "name": "presspilot" }],
+  "notes": "Runs daily at 6AM Asia/Dhaka. Scores pending keywords, picks top 3, marks them selected, triggers research-draft workflow. Uses NocoDB by default — swap the HTTP nodes for Google Sheets nodes if using Sheets."
+}

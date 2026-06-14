@@ -1,0 +1,115 @@
+{
+  "name": "PressPilot — Publish Scheduler",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [{ "field": "cronExpression", "expression": "0 10 * * *" }]
+        }
+      },
+      "id": "cron-trigger",
+      "name": "Daily 10AM Publish Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1,
+      "position": [100, 300],
+      "notes": "Runs daily at 10AM. Change cron expression to adjust frequency."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Config: how many posts to publish per run, per domain\nconst PUBLISH_LIMIT_PER_DOMAIN = 1;\n\n// Domains and their Ghost URLs + Admin API keys (from env)\nconst domains = [\n  {\n    domain: 'mostlyprompt.com',\n    ghostUrl: 'https://mostlyprompt.com',\n    adminKey: $env.GHOST_MOSTLYPROMPT_ADMIN_API_KEY\n  },\n  {\n    domain: 'fellowcoder.com', \n    ghostUrl: 'https://fellowcoder.com',\n    adminKey: $env.GHOST_FELLOWCODER_ADMIN_API_KEY\n  }\n];\n\n// Only include domains with API keys configured\nconst activeDomains = domains.filter(d => d.adminKey && d.adminKey.length > 0);\n\nreturn activeDomains.map(d => ({ json: { ...d, publishLimit: PUBLISH_LIMIT_PER_DOMAIN } }));"
+      },
+      "id": "config",
+      "name": "Load Domain Config",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [300, 300]
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.ghostUrl }}/ghost/api/admin/posts/?status=draft&limit={{ $json.publishLimit }}&order=created_at+asc",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "=Ghost {{ $json.adminKey }}" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "fetch-drafts",
+      "name": "Fetch Oldest Drafts",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [500, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Flatten: for each domain response, extract posts\nconst items = $input.all();\nconst toPublish = [];\n\nfor (const item of items) {\n  const posts = item.json.posts || [];\n  const ghostUrl = item.json.ghostUrl || $('Fetch Oldest Drafts').item.json.ghostUrl;\n  const adminKey = item.json.adminKey || $('Fetch Oldest Drafts').item.json.adminKey;\n  \n  for (const post of posts) {\n    toPublish.push({\n      json: {\n        postId: post.id,\n        postTitle: post.title,\n        updated_at: post.updated_at,\n        ghostUrl,\n        adminKey\n      }\n    });\n  }\n}\n\nreturn toPublish.length > 0 ? toPublish : [{ json: { noPostsFound: true } }];"
+      },
+      "id": "extract-posts",
+      "name": "Extract Posts to Publish",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [700, 300]
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.ghostUrl }}/ghost/api/admin/posts/{{ $json.postId }}/",
+        "method": "PUT",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "contentType": "json",
+        "body": {
+          "posts": [
+            {
+              "status": "published",
+              "updated_at": "={{ $json.updated_at }}"
+            }
+          ]
+        },
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "=Ghost {{ $json.adminKey }}" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "publish-post",
+      "name": "Publish Post",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [900, 300],
+      "notes": "Ghost requires updated_at to be sent with PUT requests to prevent conflict errors."
+    },
+    {
+      "parameters": {
+        "url": "=https://api.telegram.org/bot{{ $env.TELEGRAM_BOT_TOKEN }}/sendMessage",
+        "method": "POST",
+        "sendBody": true,
+        "contentType": "json",
+        "body": {
+          "chat_id": "={{ $env.TELEGRAM_CHAT_ID }}",
+          "text": "=✅ Published!\n\n*{{ $('Extract Posts to Publish').item.json.postTitle }}*\n🔗 {{ $('Extract Posts to Publish').item.json.ghostUrl }}",
+          "parse_mode": "Markdown"
+        },
+        "options": {}
+      },
+      "id": "telegram-notify",
+      "name": "Telegram: Published",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1100, 300]
+    }
+  ],
+  "connections": {
+    "Daily 10AM Publish Trigger": { "main": [[{ "node": "Load Domain Config", "type": "main", "index": 0 }]] },
+    "Load Domain Config": { "main": [[{ "node": "Fetch Oldest Drafts", "type": "main", "index": 0 }]] },
+    "Fetch Oldest Drafts": { "main": [[{ "node": "Extract Posts to Publish", "type": "main", "index": 0 }]] },
+    "Extract Posts to Publish": { "main": [[{ "node": "Publish Post", "type": "main", "index": 0 }]] },
+    "Publish Post": { "main": [[{ "node": "Telegram: Published", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1" },
+  "tags": [{ "name": "presspilot" }],
+  "notes": "Publishes oldest N drafts per domain daily at 10AM. Set PUBLISH_LIMIT_PER_DOMAIN in the Load Domain Config node. Disable this workflow to use fully manual publishing (approve from Ghost admin). Sends Telegram notification on each publish."
+}

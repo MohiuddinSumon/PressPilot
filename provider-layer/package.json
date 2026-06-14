@@ -1,0 +1,18 @@
+{
+  "name": "presspilot-provider-layer",
+  "version": "1.0.0",
+  "description": "LLM provider routing microservice for PressPilot",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.39.0",
+    "express": "^4.19.2",
+    "openai": "^4.72.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

@@ -1,0 +1,40 @@
+# PressPilot Caddyfile
+# Caddy handles automatic Let's Encrypt SSL for all domains.
+# Cloudflare must be set to SSL mode "Full (strict)".
+# After adding a new domain, run: docker compose exec caddy caddy reload --config /etc/caddy/Caddyfile
+
+# ---------------------------------------------------------------------------
+# Ghost — mostlyprompt.com
+# ---------------------------------------------------------------------------
+mostlyprompt.com, www.mostlyprompt.com {
+    reverse_proxy ghost-mostlyprompt:2368
+}
+
+# ---------------------------------------------------------------------------
+# Ghost — fellowcoder.com
+# ---------------------------------------------------------------------------
+fellowcoder.com, www.fellowcoder.com {
+    reverse_proxy ghost-fellowcoder:2368
+}
+
+# ---------------------------------------------------------------------------
+# Ghost — aimovi.com (uncomment when ready)
+# ---------------------------------------------------------------------------
+# aimovi.com, www.aimovi.com {
+#     reverse_proxy ghost-aimovi:2368
+# }
+
+# ---------------------------------------------------------------------------
+# n8n automation dashboard
+# Accessible at n8n.mostlyprompt.com (or change to your preferred subdomain)
+# ---------------------------------------------------------------------------
+n8n.mostlyprompt.com {
+    reverse_proxy n8n:5678
+}
+
+# ---------------------------------------------------------------------------
+# NocoDB keyword store (uncomment if using NocoDB)
+# ---------------------------------------------------------------------------
+# nocodb.mostlyprompt.com {
+#     reverse_proxy nocodb:8080
+# }
